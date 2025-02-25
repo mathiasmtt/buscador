@@ -23,7 +23,7 @@ fn mostrar_menu() -> io::Result<()> {
 }
 
 fn analizar_sistema() {
-    let monitor = SystemMonitor::new();
+    let mut monitor = SystemMonitor::new();
     
     // Configurar el manejador de Ctrl+C
     let running = Arc::new(AtomicBool::new(true));
@@ -33,6 +33,14 @@ fn analizar_sistema() {
         r.store(false, Ordering::SeqCst);
     }).expect("Error configurando el manejador de Ctrl+C");
 
+    println!("\n{}", "=== Información del Sistema ===".green());
+    
+    // Mostrar información inicial
+    println!("{}", monitor.obtener_info_completa());
+    
+    // Configurar intervalo de actualización
+    monitor.set_intervalo(2); // Actualizar cada 2 segundos
+    
     // Iniciar el monitoreo
     monitor.monitor_system(running);
 }
