@@ -1,10 +1,12 @@
 [package]
 name = "buscador"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 walkdir = "2.4.0"
 colored = "2.1.0"
 sysinfo = "0.30.5"
 rayon = "1.8"
+ctrlc = "3.4.1"
+crossterm = "0.27"

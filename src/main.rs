@@ -1,118 +1,90 @@
 use std::env;
-use std::time::{Instant, Duration};
-use std::thread;
-use std::sync::mpsc;
 use std::io::{self, Write};
+use colored::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use walkdir::WalkDir;
-use colored::*;
-use sysinfo::Disks;
-use rayon::prelude::*;
+use std::error::Error;
 
-/// Obtiene todas las unidades de disco disponibles
-fn obtener_unidades() -> Vec<String> {
-    let disks = Disks::new_with_refreshed_list();
-    let mut unidades = Vec::new();
-    
-    for disco in disks.list() {
-        if let Some(ruta) = disco.mount_point().to_str() {
-            unidades.push(ruta.to_string());
-        }
-    }
-    
-    unidades
+mod system_info;
+mod finder;
+
+use system_info::SystemMonitor;
+use finder::Finder;
+
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+fn mostrar_menu() -> io::Result<()> {
+    println!("\n{}", "=== MENÚ PRINCIPAL ===".green());
+    println!("1. {}", "Buscar archivo".yellow());
+    println!("2. {}", "Monitorear sistema".blue());
+    println!("3. {}", "Salir".red());
+    print!("\nSeleccione una opción (1-3): ");
+    io::stdout().flush()
 }
 
-/// Crea un hilo para mostrar el tiempo transcurrido
-fn crear_hilo_tiempo(inicio: Instant, rx: mpsc::Receiver<()>) {
-    thread::spawn(move || {
-        let mut ultimo_segundo = 0;
-        loop {
-            if rx.try_recv().is_ok() {
-                break;
-            }
-            
-            let transcurrido = inicio.elapsed().as_secs();
-            if transcurrido > ultimo_segundo {
-                print!("\rTiempo transcurrido: {} segundos", transcurrido);
-                io::stdout().flush().unwrap();
-                ultimo_segundo = transcurrido;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        println!(); // Nueva línea al terminar
-    });
+fn analizar_sistema() {
+    let monitor = SystemMonitor::new();
+    
+    // Configurar el manejador de Ctrl+C
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        println!("\n{}", "Deteniendo monitoreo...".yellow());
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error configurando el manejador de Ctrl+C");
+
+    // Iniciar el monitoreo
+    monitor.monitor_system(running);
 }
 
-/// Busca archivos que contengan el patrón especificado en su nombre
-/// y muestra sus rutas completas
-fn buscar_archivos(patron: &str) {
-    let encontrados = Arc::new(AtomicBool::new(false));
-    let inicio = Instant::now();
+fn buscar_archivo() {
+    print!("\nIngrese el nombre del archivo a buscar: ");
+    io::stdout().flush().unwrap();
     
-    // Obtener todas las unidades
-    let unidades = obtener_unidades();
-    println!("Unidades detectadas: {}", unidades.join(", ").yellow());
-    println!("(Esto puede tardar varios minutos ya que buscará en todas las unidades)");
-    println!("Usando {} threads para la búsqueda", rayon::current_num_threads());
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let patron = input.trim();
     
-    // Crear un canal para comunicación entre hilos
-    let (tx, rx) = mpsc::channel();
-    let tx = Arc::new(tx);
-    
-    // Crear el hilo para mostrar el tiempo
-    crear_hilo_tiempo(inicio, rx);
-    
-    // Buscar en cada unidad en paralelo
-    unidades.par_iter().for_each(|unidad| {
-        println!("\nBuscando en unidad: {}", unidad.yellow());
-        
-        // Recorrer el directorio y todos sus subdirectorios
-        WalkDir::new(unidad)
-            .follow_links(true)
-            .same_file_system(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .for_each(|entrada| {
-                if let Some(nombre) = entrada.file_name().to_str() {
-                    if nombre.to_lowercase() == patron.to_lowercase() {
-                        println!("\nEncontrado en: {}", entrada.path().display().to_string().green());
-                        encontrados.store(true, Ordering::Relaxed);
-                    }
-                }
-            });
-    });
-    
-    // Detener el contador de tiempo
-    let _ = tx.send(());
-    thread::sleep(Duration::from_millis(200));
-    
-    // Mostrar resultado final
-    let duracion = inicio.elapsed();
-    println!("\n{}", "=".repeat(50));
-    if encontrados.load(Ordering::Relaxed) {
-        println!("Búsqueda completada en {} segundos.", duracion.as_secs().to_string().yellow());
-    } else {
-        println!("{}", "No se encontraron archivos que coincidan con el patrón.".red());
-        println!("Tiempo total de búsqueda: {} segundos", duracion.as_secs().to_string().yellow());
-    }
-}
-
-fn main() {
-    // Obtener los argumentos de la línea de comandos
-    let args: Vec<String> = env::args().collect();
-    
-    // Verificar si se proporcionó un patrón de búsqueda
-    if args.len() < 2 {
-        println!("{}", "Uso: cargo run -- <nombre_archivo>".red());
+    if patron.is_empty() {
+        println!("{}", "Error: Debe ingresar un nombre de archivo.".red());
         return;
     }
     
-    // Obtener el patrón de búsqueda
-    let patron = &args[1];
     println!("Buscando archivo con nombre exacto: {}", patron.yellow());
+    Finder::buscar_archivos(patron);
+}
+
+fn main() -> Result<()> {
+    // Si se proporcionan argumentos, asumimos que es una búsqueda directa
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        let patron = &args[1];
+        println!("Buscando archivo con nombre exacto: {}", patron.yellow());
+        Finder::buscar_archivos(patron);
+        return Ok(());
+    }
+
+    loop {
+        if let Err(e) = mostrar_menu() {
+            eprintln!("Error al mostrar el menú: {}", e);
+        }
+        
+        let mut input = String::new();
+        if let Err(e) = io::stdin().read_line(&mut input) {
+            eprintln!("Error al leer la entrada: {}", e);
+            continue;
+        }
+        
+        match input.trim() {
+            "1" => buscar_archivo(),
+            "2" => analizar_sistema(),
+            "3" => {
+                println!("{}", "¡Hasta luego!".green());
+                break;
+            }
+            _ => println!("{}", "Opción no válida. Por favor, seleccione 1, 2 o 3.".red()),
+        }
+    }
     
-    // Realizar la búsqueda
-    buscar_archivos(patron);
+    Ok(())
 }
